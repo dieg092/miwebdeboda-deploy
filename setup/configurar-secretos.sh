@@ -84,6 +84,17 @@ put $DEPLOY_REPO TELEGRAM_BOT_TOKEN "$TG_TOKEN"
 put $DEPLOY_REPO TELEGRAM_CHAT_ID "$TG_CHAT"
 put $WEB_REPO DEPLOY_DISPATCH_TOKEN "$DEPLOY_DISPATCH_TOKEN"
 
+echo "   Monitor sintético (se activa después con setup/cambiar-monitor.sh)"
+v=$(envval "$P" JWT_SECRET); [ -z "$v" ] && v=$(ask "PROD_JWT_SECRET (JWT_SECRET de producción)"); put $DEPLOY_REPO PROD_JWT_SECRET "$v"
+v=$(envval "$P" SYNTHETIC_MONITOR_SECRET); [ -z "$v" ] && v=$(ask "SYNTHETIC_MONITOR_SECRET"); put $DEPLOY_REPO SYNTHETIC_MONITOR_SECRET "$v"
+v=$(envval "$WEB/.env" STRIPE_TEST_SECRET_KEY); [ -z "$v" ] && v=$(ask "STRIPE_TEST_SECRET_KEY (sk_test_…)"); put $DEPLOY_REPO STRIPE_TEST_SECRET_KEY "$v"
+put $DEPLOY_REPO LIVE_CANARY_EMAIL "$(ask "LIVE_CANARY_EMAIL del chequeo live de Stripe (Enter para omitir)")"
+put $DEPLOY_REPO STRIPE_LIVE_RESTRICTED_KEY "$(ask "STRIPE_LIVE_RESTRICTED_KEY: crea una nueva en Stripe (rk_live_…, mismos permisos que la actual) (Enter para omitir)")"
+read -r -p "   ¿Poner ahora los proxies ES/MX/US del monitor regional (solo dispatch manual)? [s/N] " px </dev/tty
+if [ "$px" = s ]; then
+  for r in ES MX US; do for k in SERVER USERNAME PASSWORD; do put $DEPLOY_REPO PROXY_${r}_$k "$(ask "PROXY_${r}_$k")"; done; done
+fi
+
 echo "4/4 seo-agent: los mismos secretos que hoy, en el entorno «produccion» (solo main)"
 for n in $(gh api "repos/$SEO_REPO/actions/secrets?per_page=100" --jq '.secrets[].name'); do
   case $n in
@@ -94,7 +105,8 @@ for n in $(gh api "repos/$SEO_REPO/actions/secrets?per_page=100" --jq '.secrets[
   put $SEO_REPO $n "$v" produccion
 done
 
-echo "Activando las comprobaciones diarias de producción (health-checks.yml)"
+echo "Activando las comprobaciones diarias de producción (health-checks.yml, 09:15 UTC)."
+echo "Las antiguas de wedding-invite-2 siguen activas hasta comprobar las nuevas (MIGRACION.md)."
 gh workflow enable health-checks.yml -R $DEPLOY_REPO
 
 echo

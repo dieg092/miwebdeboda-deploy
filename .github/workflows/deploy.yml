@@ -37,6 +37,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
     outputs:
       sha: ${{ steps.verify.outputs.sha }}
     steps:
@@ -50,6 +53,8 @@ jobs:
         id: verify
         env:
           GH_TOKEN: ${{ secrets.APP_READ_TOKEN }}
+          # el registro de despliegues y el HEAD de este repositorio (APP_READ_TOKEN no ve este repositorio)
+          DEPLOY_GH_TOKEN: ${{ github.token }}
           DEPLOY_REPO: ${{ github.repository }}
           # el input solo llega como variable de entorno, nunca interpolado en el script
           REQUESTED: ${{ inputs.sha }}
@@ -215,10 +220,14 @@ jobs:
           VERIFY: ${{ needs.verify.result }}
           DEPLOY: ${{ needs.deploy.result }}
           SMOKE: ${{ needs.smoke.result }}
+          CANCELLED: ${{ cancelled() }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$DEPLOY" = success ] && [ "$SMOKE" = success ]; then EMOJI="✅"; STATUS=success
           elif [ "$DEPLOY" = success ]; then EMOJI="🚨"; STATUS="DEPLOY PROMOVIDO SIN SMOKE EN VERDE"
+          elif [ "$VERIFY" = cancelled ] || [ "$DEPLOY" = cancelled ] || [ "$CANCELLED" = true ]; then
+            # nadie cancela un despliegue a propósito: avisar (el token de despacho puede cancelar ejecuciones)
+            EMOJI="🛑"; STATUS="CANCELADO: comprobar quién lo canceló y relanzarlo"
           elif [ "$VERIFY" != success ]; then EMOJI="⛔"; STATUS="no desplegado: no pasa la verificación"
           else EMOJI="❌"; STATUS=failure; fi
           {

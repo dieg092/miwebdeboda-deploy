@@ -2,14 +2,16 @@ name: Daily Health Checks (Email + Cron Heartbeat)
 
 on:
   schedule:
-    # 08:45 UTC — tras el monitor de Stripe (08:00 UTC).
-    - cron: "45 8 * * *"
+    # 09:15 UTC: tras el monitor de Stripe (08:00) y sin coincidir con el workflow
+    # antiguo de wedding-invite-2 (08:45), que sigue activo hasta retirarlo.
+    - cron: "15 9 * * *"
   workflow_dispatch: {}
 
 # Movido aquí desde wedding-invite-2 (2026-11-04): usa la BD de producción y la
 # clave real de Resend, que ya no pueden estar en el repositorio de la web.
 permissions:
   contents: read
+  deployments: read
 
 jobs:
   check:
@@ -36,12 +38,27 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Descargar wedding-invite-2 (main)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Solo el commit que ya está en producción: el código de main aún sin desplegar no ha pasado la
+      # puerta (huella, tests) y no puede correr con estos secretos.
+      - name: Commit en producción
+        id: deployed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_REPO: ${{ github.repository }}
+        run: node scripts/ultimo-desplegado.mjs
+
+      - name: Descargar wedding-invite-2 (commit en producción)
         uses: actions/checkout@v4
         with:
           repository: dieg092/wedding-invite-2
-          ref: main
+          ref: ${{ steps.deployed.outputs.sha }}
           token: ${{ secrets.APP_READ_TOKEN }}
           path: app
           persist-credentials: false

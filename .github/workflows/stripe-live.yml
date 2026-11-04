@@ -1,0 +1,145 @@
+name: Live Stripe Check (sin pagar)
+
+# Chequeo en modo REAL de Stripe, 2 veces por semana. Abre con la cuenta
+# "canario real" un checkout real de Studio y otro de Premium sin pagarlos,
+# los caduca y comprueba que el webhook real recibe y acepta el evento
+# checkout.session.expired (firma con el secreto real, de punta a punta).
+# Ver scripts/synthetic-live-check.ts en wedding-invite-2.
+#
+# Movido aquí desde dieg092/miwebdeboda-synthetic-monitor (2026-11-04), como
+# monitor-sintetico.yml: solo ejecuta el commit de la app que ya está en producción.
+on:
+  schedule:
+    # Lunes y jueves 08:30 UTC, despues del monitor diario en modo test (08:00).
+    - cron: "30 8 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: stripe-live
+  cancel-in-progress: false
+
+jobs:
+  live-check:
+    name: Checkout real → caducar → webhook real
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
+      JWT_SECRET: ${{ secrets.PROD_JWT_SECRET }}
+      CANARY_EMAIL: ${{ secrets.LIVE_CANARY_EMAIL }}
+      CANARY_SLUG: synthetic-live-canary
+      STRIPE_LIVE_RESTRICTED_KEY: ${{ secrets.STRIPE_LIVE_RESTRICTED_KEY }}
+      SYNTHETIC_MONITOR_BASE_URL: https://miwebdeboda.com
+
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - name: Check required secrets
+        working-directory: .
+        run: |
+          missing=""
+          [ -n "$CANARY_EMAIL" ] || missing="$missing LIVE_CANARY_EMAIL"
+          [ -n "$STRIPE_LIVE_RESTRICTED_KEY" ] || missing="$missing STRIPE_LIVE_RESTRICTED_KEY"
+          if [ -n "$missing" ]; then
+            echo "Faltan secretos del repo:$missing (setup/configurar-secretos.sh)" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: deploy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Commit en producción
+        id: deployed
+        working-directory: deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_REPO: ${{ github.repository }}
+        run: node scripts/ultimo-desplegado.mjs
+
+      - name: Descargar wedding-invite-2 (commit en producción)
+        uses: actions/checkout@v4
+        with:
+          repository: dieg092/wedding-invite-2
+          ref: ${{ steps.deployed.outputs.sha }}
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Ensure live canary account exists
+        run: pnpm synthetic:setup-canary
+
+      - name: Mint session for live canary account
+        run: pnpm synthetic:mint-session
+
+      - name: Get installed Playwright version
+        id: playwright-version
+        run: echo "version=$(node -e "console.log(require('@playwright/test/package.json').version)")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright browser binary (chromium)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium
+        timeout-minutes: 5
+
+      - name: Install Playwright OS dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Open real checkouts without paying
+        run: pnpm test:e2e:synthetic-live
+
+      # if: always(): aunque el spec falle a medias, el script caduca las
+      # sesiones que si llegaron a abrirse (nunca queda nada cobrable abierto).
+      - name: Validate, expire and check the real webhook
+        if: always()
+        run: |
+          if [ -f e2e/synthetic/.live-sessions.json ]; then
+            pnpm synthetic:live-check
+          else
+            echo "El spec no llego a abrir ningun checkout" >&2
+            exit 1
+          fi
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-stripe-check-report
+          path: app/test-results/
+          retention-days: 7

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { Refused, SKIP_RE, fingerprint, parseApprovals, protectedMatcher, testWeakenings, verify } from "../scripts/verify-deployable.mjs";
+import { Refused, SKIP_RE, deployedOrBootstrap, fingerprint, parseApprovals, protectedMatcher, testWeakenings, verify } from "../scripts/verify-deployable.mjs";
 
 const PROTECTED = readFileSync(new URL("../protegido.txt", import.meta.url), "utf8");
 const SIN_CI = readFileSync(new URL("../sin-ci.txt", import.meta.url), "utf8");
@@ -55,6 +55,51 @@ const run = (opts = {}, args = {}) =>
     ciIgnoredText: SIN_CI,
     log: () => {},
   });
+
+describe("protegido.txt: costuras de src/ con la CI", () => {
+  it("protege el guard de BD, los desvíos a simuladores y sus tests, pero no el resto de src/", () => {
+    for (const f of ["src/helpers/db/assertNotProductionDatabase.ts", "src/helpers/aws/s3-endpoint.ts", "src/lib/email/resend-api.ts", "src/lib/ai/cloudflare-api.ts", "src/lib/email/resend-api.test.ts"])
+      assert.equal(isProtected(f), true, f);
+    for (const f of ["src/lib/ai/cloudflareEmbeddings.ts", "src/app/page.tsx", "src/lib/x.test.ts"]) assert.equal(isProtected(f), false, f);
+  });
+});
+
+describe("registro de despliegues: se lee con el token del propio repositorio", () => {
+  // APP_READ_TOKEN no ve miwebdeboda-deploy (a propósito): los deployments van con GITHUB_TOKEN
+  const appOnly = (opts) => {
+    const { api } = fakeApi(opts);
+    return async (p) => {
+      if (p.includes("/deployments")) throw new Refused("GitHub respondió 404 a deployments");
+      return api(p);
+    };
+  };
+  it("verify usa deployApi para el registro y api para la app", async () => {
+    const r = await verify({
+      api: appOnly(),
+      deployApi: fakeApi({ deployed: MID }).api,
+      appRepo: "o/app",
+      deployRepo: "o/deploy",
+      requested: "",
+      protectedText: PROTECTED,
+      approvalsText: `huella ${FP} 2026-11-04 aaaa`,
+      bootstrapBase: s("e"),
+      ciIgnoredText: SIN_CI,
+      log: () => {},
+    });
+    assert.equal(r.base, MID);
+  });
+  it("rechaza un re-run con una versión antigua de este repositorio", async () => {
+    const base = { api: fakeApi().api, appRepo: "o/app", deployRepo: "o/deploy", requested: "", protectedText: PROTECTED, approvalsText: `huella ${FP} 2026-11-04 aaaa`, bootstrapBase: s("e"), ciIgnoredText: SIN_CI, log: () => {} };
+    // fakeApi responde HEAD (a) a cualquier commits/main, también al del repositorio de despliegue
+    assert.equal((await verify({ ...base, runningSha: HEAD })).sha, HEAD);
+    await assert.rejects(verify({ ...base, runningSha: s("9") }), /no lo relances/);
+  });
+  it("deployedOrBootstrap: último desplegado con éxito, o la base inicial si aún no hay ninguno", async () => {
+    assert.equal(await deployedOrBootstrap(fakeApi({ deployed: MID }).api, "o/deploy", s("e")), MID);
+    assert.equal(await deployedOrBootstrap(fakeApi({ deployed: null }).api, "o/deploy", s("e")), s("e"));
+    await assert.rejects(deployedOrBootstrap(fakeApi({ deployed: null }).api, "o/deploy", "no-sha"), Refused);
+  });
+});
 
 describe("verify: quién y qué se despliega", () => {
   it("acepta el HEAD de main con CI verde, huella aprobada y tests intactos", async () => {

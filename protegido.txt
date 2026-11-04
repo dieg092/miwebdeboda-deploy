@@ -33,7 +33,18 @@ scripts/check-bundle-budget.ts
 scripts/post-deploy-smoke.ts
 scripts/ci/**
 perf-budgets.json
+
+# código de src/ que decide si los tests tocan servicios de verdad: el guard que impide
+# correr tests contra la BD de producción y los desvíos a simuladores de la CI (en
+# producción ignoran la variable). Cambiarlos podría hacer que la CI pruebe otra cosa
+# o que producción hable con un servidor ajeno; con sus tests, que fijan ese contrato.
 src/helpers/db/assertNotProductionDatabase.ts
+src/helpers/aws/s3-endpoint.ts
+src/helpers/aws/s3-endpoint.test.ts
+src/lib/email/resend-api.ts
+src/lib/email/resend-api.test.ts
+src/lib/ai/cloudflare-api.ts
+src/lib/ai/cloudflareEmbeddings.test.ts
 
 # lo que corre contra producción al desplegar: migraciones y configuración de Vercel/Next
 prisma/migrations/**

@@ -125,7 +125,7 @@ async function compareAll(api, repo, base, head) {
 }
 
 /** Último commit de la app desplegado con éxito por este repositorio (registro de deployments). */
-async function lastDeployed(api, deployRepo) {
+export async function lastDeployed(api, deployRepo) {
   const deployments = await api(`repos/${deployRepo}/deployments?environment=produccion&per_page=30`);
   for (const d of deployments) {
     const statuses = await api(`repos/${deployRepo}/deployments/${d.id}/statuses?per_page=10`);
@@ -135,7 +135,22 @@ async function lastDeployed(api, deployRepo) {
   return null;
 }
 
-export async function verify({ api, appRepo, deployRepo, requested, protectedText, approvalsText, bootstrapBase, ciIgnoredText = "", log = console.log }) {
+/**
+ * Commit de la app que ya está en producción (o la base inicial aprobada si aún no hay despliegues): el único
+ * código de la app que los workflows con secretos (health checks, monitor sintético) pueden ejecutar.
+ */
+export async function deployedOrBootstrap(api, deployRepo, bootstrapBase) {
+  const sha = (await lastDeployed(api, deployRepo)) ?? bootstrapBase;
+  if (!SHA_RE.test(sha ?? "")) refuse(`no hay despliegue registrado ni base inicial válida ('${sha}')`);
+  return sha;
+}
+
+export async function verify({ api, deployApi = api, appRepo, deployRepo, runningSha, requested, protectedText, approvalsText, bootstrapBase, ciIgnoredText = "", log = console.log }) {
+  // Un «re-run» de una ejecución antigua usa su versión del workflow y de esta puerta: solo vale la de main de ahora.
+  if (runningSha !== undefined) {
+    const current = (await deployApi(`repos/${deployRepo}/commits/main`)).sha;
+    if (runningSha !== current) refuse(`esta ejecución usa la versión ${String(runningSha).slice(0, 7)} de miwebdeboda-deploy y main está en ${current.slice(0, 7)}: lanza el despliegue de nuevo (no lo relances)`);
+  }
   const head = (await api(`repos/${appRepo}/commits/main`)).sha;
   if (requested && !SHA_RE.test(requested)) refuse(`sha no válido: '${requested}' (hace falta el sha completo de 40 caracteres)`);
   // Siempre se despliega el HEAD de main. «requested» (el commit cuya CI lanzó el despliegue) solo sirve para
@@ -177,7 +192,7 @@ export async function verify({ api, appRepo, deployRepo, requested, protectedTex
   }
 
   // Base para buscar tests debilitados: el último despliegue, o un commit posterior que el propietario aprobó.
-  let base = (await lastDeployed(api, deployRepo)) ?? bootstrapBase;
+  let base = (await lastDeployed(deployApi, deployRepo)) ?? bootstrapBase;
   if (!SHA_RE.test(base ?? "")) refuse("no hay despliegue anterior registrado ni base-inicial.txt: no se puede comprobar qué tests han cambiado");
   for (const c of approvals.commits) {
     if (c === base) continue;
@@ -199,15 +214,19 @@ export async function verify({ api, appRepo, deployRepo, requested, protectedTex
 // ---------- CLI ----------
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const { APP_REPO, DEPLOY_REPO, GH_TOKEN, REQUESTED = "", GITHUB_OUTPUT } = process.env;
+  const { APP_REPO, DEPLOY_REPO, GH_TOKEN, DEPLOY_GH_TOKEN, GITHUB_SHA, REQUESTED = "", GITHUB_OUTPUT } = process.env;
   try {
     if (!APP_REPO || !DEPLOY_REPO) refuse("faltan APP_REPO o DEPLOY_REPO");
     if (!GH_TOKEN) refuse("falta APP_READ_TOKEN");
+    if (!GITHUB_SHA) refuse("falta GITHUB_SHA");
+    if (!DEPLOY_GH_TOKEN) refuse("falta el GITHUB_TOKEN del workflow (DEPLOY_GH_TOKEN) para leer el registro de despliegues");
     const read = (f) => readFileSync(path.join(here, f), "utf8");
     const r = await verify({
       api: github(GH_TOKEN),
+      deployApi: github(DEPLOY_GH_TOKEN),
       appRepo: APP_REPO,
       deployRepo: DEPLOY_REPO,
+      runningSha: GITHUB_SHA,
       requested: REQUESTED.trim(),
       protectedText: read("protegido.txt"),
       approvalsText: read("aprobaciones.txt"),

@@ -1,0 +1,202 @@
+name: Monitor sintético (Stripe)
+
+# Movido aquí desde dieg092/miwebdeboda-synthetic-monitor (2026-11-04): usa la BD
+# y el JWT_SECRET de producción, y aquel repositorio descargaba el HEAD de main de
+# la app (código sin pasar la puerta) y era público (los informes de Playwright,
+# con la cookie de sesión del canario, se podían descargar). Aquí solo se ejecuta
+# el commit que ya está en producción (scripts/ultimo-desplegado.mjs).
+
+on:
+  schedule:
+    # 08:00 UTC todos los dias — fuera de horas punta, antes de que empiece
+    # el trafico real del dia en España. La ejecucion programada corre SIN
+    # proxy (IP del runner de GitHub): comprueba lo esencial — que el ciclo
+    # de suscripcion en produccion funciona — sin depender de infra de
+    # terceros (Webshare) que ya ha fallado dos veces (proxies borrados por
+    # accidente 2026-07; tunel a checkout.stripe.com caido / bloqueo de IP
+    # de datacenter por Stripe Radar desde ~2026-08-26). La cobertura
+    # multi-region (ES/MX/US via proxy) pasa a ser manual, bajo demanda.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "Región a probar VIA PROXY (ES/MX/US). Vacío = sin proxy, desde la IP del runner (igual que el cron diario)."
+        required: false
+        type: choice
+        options: ["", "ES", "MX", "US"]
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: monitor-sintetico
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Subscribe → Upgrade → Upgrade → Cancel
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
+      JWT_SECRET: ${{ secrets.PROD_JWT_SECRET }}
+      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      SYNTHETIC_MONITOR_EMAIL: ${{ secrets.SYNTHETIC_MONITOR_EMAIL }}
+      SYNTHETIC_MONITOR_BASE_URL: https://miwebdeboda.com
+      PROXY_ES_SERVER: ${{ secrets.PROXY_ES_SERVER }}
+      PROXY_ES_USERNAME: ${{ secrets.PROXY_ES_USERNAME }}
+      PROXY_ES_PASSWORD: ${{ secrets.PROXY_ES_PASSWORD }}
+      PROXY_MX_SERVER: ${{ secrets.PROXY_MX_SERVER }}
+      PROXY_MX_USERNAME: ${{ secrets.PROXY_MX_USERNAME }}
+      PROXY_MX_PASSWORD: ${{ secrets.PROXY_MX_PASSWORD }}
+      PROXY_US_SERVER: ${{ secrets.PROXY_US_SERVER }}
+      PROXY_US_USERNAME: ${{ secrets.PROXY_US_USERNAME }}
+      PROXY_US_PASSWORD: ${{ secrets.PROXY_US_PASSWORD }}
+
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: deploy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Commit en producción
+        id: deployed
+        working-directory: deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_REPO: ${{ github.repository }}
+        run: node scripts/ultimo-desplegado.mjs
+
+      - name: Descargar wedding-invite-2 (commit en producción)
+        uses: actions/checkout@v4
+        with:
+          repository: dieg092/wedding-invite-2
+          ref: ${{ steps.deployed.outputs.sha }}
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      # Solo hay region (y por tanto proxy) cuando se lanza a mano con una
+      # elegida. El cron diario y los dispatch sin region dejan REGION vacia
+      # y corren sin proxy.
+      - name: Determine region (proxy solo en dispatch manual con region)
+        env:
+          INPUT_REGION: ${{ inputs.region }}
+        run: |
+          REGION="$INPUT_REGION"
+          if [ -n "$REGION" ]; then
+            echo "Ejecucion regional VIA PROXY: $REGION"
+          else
+            echo "Ejecucion SIN PROXY (IP del runner de GitHub)"
+          fi
+          echo "REGION=$REGION" >> "$GITHUB_ENV"
+
+      - name: Resolve proxy credentials for the requested region
+        if: env.REGION != ''
+        run: |
+          case "$REGION" in
+            ES)
+              echo "PROXY_SERVER=$PROXY_ES_SERVER" >> "$GITHUB_ENV"
+              echo "PROXY_USERNAME=$PROXY_ES_USERNAME" >> "$GITHUB_ENV"
+              echo "PROXY_PASSWORD=$PROXY_ES_PASSWORD" >> "$GITHUB_ENV"
+              ;;
+            MX)
+              echo "PROXY_SERVER=$PROXY_MX_SERVER" >> "$GITHUB_ENV"
+              echo "PROXY_USERNAME=$PROXY_MX_USERNAME" >> "$GITHUB_ENV"
+              echo "PROXY_PASSWORD=$PROXY_MX_PASSWORD" >> "$GITHUB_ENV"
+              ;;
+            US)
+              echo "PROXY_SERVER=$PROXY_US_SERVER" >> "$GITHUB_ENV"
+              echo "PROXY_USERNAME=$PROXY_US_USERNAME" >> "$GITHUB_ENV"
+              echo "PROXY_PASSWORD=$PROXY_US_PASSWORD" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Región desconocida: $REGION" >&2
+              exit 1
+              ;;
+          esac
+          echo "EXPECTED_COUNTRY=$REGION" >> "$GITHUB_ENV"
+
+      - name: Ensure canary account exists
+        run: pnpm synthetic:setup-canary
+
+      - name: Mint session for canary account
+        run: pnpm synthetic:mint-session
+
+      - name: Get installed Playwright version
+        id: playwright-version
+        run: echo "version=$(node -e "console.log(require('@playwright/test/package.json').version)")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright browser binary (chromium)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium
+        timeout-minutes: 5
+
+      - name: Install Playwright OS dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Check proxy region
+        if: env.REGION != ''
+        run: npx tsx scripts/synthetic-monitor-check-proxy-region.ts
+
+      - name: Run subscription lifecycle against production
+        run: pnpm test:e2e:synthetic
+
+      # Solo se alcanza si el paso anterior tuvo éxito -- deja constancia en
+      # HeartbeatLog, de donde /confianza calcula la disponibilidad real.
+      # Secreto dedicado (no CRON_SECRET): este repo es público y el peor
+      # caso de una filtración debe ser solo un latido falso, nunca acceso
+      # a rutas destructivas del backend.
+      - name: Notify heartbeat endpoint
+        env:
+          SYNTHETIC_MONITOR_SECRET: ${{ secrets.SYNTHETIC_MONITOR_SECRET }}
+        run: |
+          printf 'header = "Authorization: Bearer %s"\n' "$SYNTHETIC_MONITOR_SECRET" \
+            | curl -sf -X POST -K - "https://miwebdeboda.com/api/monitor/heartbeat"
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-monitor-report
+          path: app/test-results/
+          retention-days: 7
+
+      - name: Clean up canary subscription and reset account
+        if: always()
+        run: pnpm synthetic:cleanup
