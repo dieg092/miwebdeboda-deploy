@@ -22,11 +22,17 @@ const TREE = [
 ];
 const FP = fingerprint(TREE, isProtected).fingerprint;
 
-/** API de GitHub falsa: HEAD de main, runs de CI, árbol, deployments y comparaciones. */
-function fakeApi({ head = HEAD, runs, tree = TREE, deployed = BASE, compare = {} } = {}) {
+const owner = { login: "o", type: "User" };
+const upd = (before, after, actor = owner, activity_type = "push") => ({ before, after, actor, activity_type });
+/** Actividad de main por defecto: el propietario llevó main de e → d → BASE → MID → HEAD (la más reciente primero). */
+const ACTIVITY = [upd(MID, HEAD), upd(BASE, MID, owner, "pr_merge"), upd(s("d"), BASE), upd(s("e"), s("d"))];
+
+/** API de GitHub falsa: HEAD de main, runs de CI, árbol, deployments, comparaciones y actividad de main. */
+function fakeApi({ head = HEAD, runs, tree = TREE, deployed = BASE, compare = {}, activity = ACTIVITY } = {}) {
   const calls = [];
   const api = async (p) => {
     calls.push(p);
+    if (p.startsWith("repos/o/app/activity?")) return activity;
     if (p.endsWith("/commits/main")) return { sha: head };
     if (p.includes("/actions/workflows/ci.yml/runs"))
       return { workflow_runs: runs ?? [{ head_sha: head, head_branch: "main", event: "push", path: ".github/workflows/ci.yml", conclusion: "success" }] };
@@ -237,5 +243,42 @@ describe("reglas", () => {
 
   it("los rechazos son Refused (mensaje claro, no un fallo inesperado)", async () => {
     await run({}, { requested: "x" }).catch((e) => assert.ok(e instanceof Refused));
+  });
+});
+
+describe("verify: quién movió main desde el último despliegue", () => {
+  const bot = { login: "github-actions[bot]", type: "Bot" };
+  it("acepta pushes y fusiones de PR del propietario hasta la base", async () => {
+    assert.equal((await run()).sha, HEAD);
+  });
+  it("rechaza un commit empujado a main por un workflow (github-actions[bot])", async () => {
+    await assert.rejects(run({ activity: [upd(MID, HEAD, bot), ...ACTIVITY.slice(1)] }), /github-actions\[bot\], que no es el propietario/);
+  });
+  it("rechaza un push de otra cuenta aunque luego el propietario empuje encima", async () => {
+    const other = { login: "Losabestu", type: "User" };
+    await assert.rejects(run({ activity: [upd(MID, HEAD), upd(BASE, MID, other)] }), /Losabestu, que no es el propietario/);
+  });
+  it("rechaza un bot que se llame como el propietario", async () => {
+    await assert.rejects(run({ activity: [upd(MID, HEAD, { login: "o", type: "Bot" }), ...ACTIVITY.slice(1)] }), /no es el propietario/);
+  });
+  it("rechaza un force-push del propietario", async () => {
+    await assert.rejects(run({ activity: [upd(MID, HEAD, owner, "force_push"), ...ACTIVITY.slice(1)] }), /force_push de o: solo valen push o fusión/);
+  });
+  it("rechaza una actualización sin actor", async () => {
+    await assert.rejects(run({ activity: [upd(MID, HEAD, null), ...ACTIVITY.slice(1)] }), /desconocido, que no es el propietario/);
+  });
+  it("rechaza si el registro no explica cómo llegó main al HEAD", async () => {
+    await assert.rejects(run({ activity: [] }), /no dice quién llevó main/);
+    await assert.rejects(run({ activity: [upd(MID, HEAD)] }), /no dice quién llevó main a ccccccc/);
+  });
+  it("la base aprobada corta la cadena: lo anterior a ella no se revisa", async () => {
+    const compare = { [`${BASE}...${MID}`]: { status: "ahead", files: [] }, [`${MID}...${HEAD}`]: { status: "ahead", files: [] } };
+    const r = await run({ compare, activity: [upd(MID, HEAD), upd(BASE, MID, bot)] }, { approvals: `huella ${FP} x\ncommit ${MID} 2026-11-04 revisado` });
+    assert.equal(r.base, MID);
+  });
+  it("sin cambios desde el despliegue no consulta la actividad", async () => {
+    const { api, calls } = fakeApi({ deployed: HEAD, activity: [] });
+    await verify({ api, appRepo: "o/app", deployRepo: "o/deploy", requested: "", protectedText: PROTECTED, approvalsText: `huella ${FP} x`, bootstrapBase: s("e"), ciIgnoredText: SIN_CI, log: () => {} });
+    assert.equal(calls.some((p) => p.includes("/activity")), false);
   });
 });

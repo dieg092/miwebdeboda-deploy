@@ -68,11 +68,10 @@ jobs:
           version: 9
           package_json_file: app/package.json
 
+      # Sin caché de pnpm: job con secretos de producción (ver monitor-sintetico.yml).
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
-          cache-dependency-path: app/pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: app

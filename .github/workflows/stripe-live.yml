@@ -84,11 +84,10 @@ jobs:
         with:
           version: 9
 
+      # Sin caché de pnpm ni de Playwright: job con secretos de producción (ver monitor-sintetico.yml).
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
-          cache-dependency-path: app/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -102,19 +101,7 @@ jobs:
       - name: Mint session for live canary account
         run: pnpm synthetic:mint-session
 
-      - name: Get installed Playwright version
-        id: playwright-version
-        run: echo "version=$(node -e "console.log(require('@playwright/test/package.json').version)")" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-
       - name: Install Playwright browser binary (chromium)
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm exec playwright install chromium
         timeout-minutes: 5
 

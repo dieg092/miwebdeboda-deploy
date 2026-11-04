@@ -145,7 +145,32 @@ export async function deployedOrBootstrap(api, deployRepo, bootstrapBase) {
   return sha;
 }
 
-export async function verify({ api, deployApi = api, appRepo, deployRepo, runningSha, requested, protectedText, approvalsText, bootstrapBase, ciIgnoredText = "", log = console.log }) {
+const OWNER_UPDATES = new Set(["push", "pr_merge"]);
+const MAX_MAIN_UPDATES = 100;
+
+/**
+ * Quién movió main desde `base` hasta `head`. Sigue el registro de actividad hacia atrás (cada actualización
+ * tiene before → after) y exige que todas sean push o fusión de PR de una cuenta de usuario propietaria. Así se
+ * rechaza un commit empujado a main por un workflow con GITHUB_TOKEN (github-actions[bot]), por otra cuenta o
+ * con force-push, aunque no toque ficheros protegidos.
+ */
+export async function mainUpdatedByOwner(api, appRepo, base, head, owners) {
+  if (base === head) return 0;
+  const activity = await api(`repos/${appRepo}/activity?ref=refs/heads/main&direction=desc&per_page=${MAX_MAIN_UPDATES}`);
+  let current = head;
+  for (let steps = 1; steps <= MAX_MAIN_UPDATES; steps++) {
+    const a = activity.find((x) => x.after === current);
+    if (!a) refuse(`el registro de actividad de main no dice quién llevó main a ${current.slice(0, 7)} (desde ${base.slice(0, 7)}): no se despliega`);
+    const who = a.actor?.login ?? "desconocido";
+    if (!OWNER_UPDATES.has(a.activity_type)) refuse(`main llegó a ${current.slice(0, 7)} con un ${a.activity_type} de ${who}: solo valen push o fusión de PR del propietario`);
+    if (a.actor?.type !== "User" || !owners.includes(a.actor.login)) refuse(`main llegó a ${current.slice(0, 7)} con un ${a.activity_type} de ${who}, que no es el propietario (${owners.join(", ")}): no se despliega`);
+    if (a.before === base) return steps;
+    current = a.before;
+  }
+  refuse(`hay más de ${MAX_MAIN_UPDATES} actualizaciones de main desde ${base.slice(0, 7)}: aprueba un commit reciente (bash scripts/aprobar.sh commit <sha>)`);
+}
+
+export async function verify({ api, deployApi = api, appRepo, deployRepo, runningSha, requested, protectedText, approvalsText, bootstrapBase, ciIgnoredText = "", owners = [appRepo.split("/")[0]], log = console.log }) {
   // Un «re-run» de una ejecución antigua usa su versión del workflow y de esta puerta: solo vale la de main de ahora.
   if (runningSha !== undefined) {
     const current = (await deployApi(`repos/${deployRepo}/commits/main`)).sha;
@@ -207,7 +232,9 @@ export async function verify({ api, deployApi = api, appRepo, deployRepo, runnin
   const weak = testWeakenings(cmp.files ?? []);
   if (weak.length) refuse(`desde ${base.slice(0, 7)} se debilitan los tests:\n  - ${weak.join("\n  - ")}\nSi es correcto: bash scripts/aprobar.sh commit ${sha}`);
 
-  log(`Desplegable: ${sha} (HEAD de main, CI en verde${ciSha === sha ? "" : ` en ${ciSha.slice(0, 7)} + solo ficheros sin CI`}, ${fp.files} ficheros protegidos aprobados, tests sin debilitar desde ${base.slice(0, 7)})`);
+  const updates = await mainUpdatedByOwner(api, appRepo, base, sha, owners);
+
+  log(`Desplegable: ${sha} (HEAD de main, CI en verde${ciSha === sha ? "" : ` en ${ciSha.slice(0, 7)} + solo ficheros sin CI`}, ${fp.files} ficheros protegidos aprobados, tests sin debilitar y ${updates} actualizaciones de main del propietario desde ${base.slice(0, 7)})`);
   return { sha, fingerprint: fp.fingerprint, base };
 }
 

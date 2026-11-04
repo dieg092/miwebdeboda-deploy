@@ -48,6 +48,7 @@ check_app_read_token() {
   check_github_common "$t"
   expect "lee wedding-invite-2" "$(gh_status "$t" GET "repos/$CK_APP/contents/package.json")" 200
   expect "lee las ejecuciones de su CI" "$(gh_status "$t" GET "repos/$CK_APP/actions/runs?per_page=1")" 200
+  expect "lee quién actualizó main (registro de actividad)" "$(gh_status "$t" GET "repos/$CK_APP/activity?ref=refs/heads/main&per_page=1")" 200
   expect "no puede escribir código ni ramas en wedding-invite-2" "$(write_probe "$t" "$CK_APP")" 403 404
   expect "no ve los secretos de wedding-invite-2" "$(gh_status "$t" GET "repos/$CK_APP/actions/secrets")" 403 404
   expect "no puede lanzar workflows" "$(gh_status "$t" POST "repos/$CK_APP/actions/workflows/ci.yml/dispatches" '{"ref":"refs/heads/no-existe-comprobacion-permisos"}')" 403 404
