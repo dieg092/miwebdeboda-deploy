@@ -1,0 +1,113 @@
+name: Daily Health Checks (Email + Cron Heartbeat)
+
+on:
+  schedule:
+    # 08:45 UTC — tras el monitor de Stripe (08:00 UTC).
+    - cron: "45 8 * * *"
+  workflow_dispatch: {}
+
+# Movido aquí desde wedding-invite-2 (2026-11-04): usa la BD de producción y la
+# clave real de Resend, que ya no pueden estar en el repositorio de la web.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Canario de email + latido de crons
+    # Fijado: ubuntu-latest pasó a 26.04 (2026-11-02) y Playwright aún no la admite.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    env:
+      # Antes eran 2 workflows separados (email-canary-monitor.yml y
+      # cron-heartbeat-monitor.yml); se fusionan aquí para compartir un
+      # único checkout+install en vez de duplicar ese coste fijo dos veces
+      # al día. Cada chequeo sigue siendo independiente: si el email falla,
+      # el latido de crons se comprueba igual (if: always() más abajo), y
+      # el job entero queda en rojo si cualquiera de los dos falló, para no
+      # perder visibilidad de ninguno de los dos por culpa del otro.
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      SYNTHETIC_MONITOR_EMAIL: ${{ secrets.SYNTHETIC_MONITOR_EMAIL }}
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar wedding-invite-2 (main)
+        uses: actions/checkout@v4
+        with:
+          repository: dieg092/wedding-invite-2
+          ref: main
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          package_json_file: app/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        working-directory: app
+        run: pnpm db:generate
+
+      - name: Send canary email and verify delivery
+        working-directory: app
+        id: canary
+        run: pnpm email:canary-monitor
+
+      - name: Check cron heartbeats
+        working-directory: app
+        id: heartbeats
+        if: always()
+        run: pnpm cron-heartbeat:check
+
+      - name: Check blog cover image attribution
+        working-directory: app
+        id: blog-attribution
+        if: always()
+        run: pnpm blog:check-attribution
+
+      - name: Check blog article publication
+        working-directory: app
+        id: blog-publication
+        if: always()
+        run: pnpm blog:check-publication
+
+      - name: Build Telegram message
+        id: telegram-message
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then EMOJI="✅"; else EMOJI="❌"; fi
+
+          {
+            echo "text<<TELEGRAM_MSG_EOF"
+            echo "$EMOJI <b>Health checks wedding-invite-2</b>: $STATUS"
+            echo "Canary email: ${{ steps.canary.outcome }}"
+            echo "Cron heartbeats: ${{ steps.heartbeats.outcome }}"
+            echo "Atribución de imágenes del blog: ${{ steps.blog-attribution.outcome }}"
+            echo "Publicación de artículos del blog: ${{ steps.blog-publication.outcome }}"
+            echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "TELEGRAM_MSG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Notify Telegram
+        if: always()
+        uses: ./.github/actions/notify-telegram
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: ${{ steps.telegram-message.outputs.text }}

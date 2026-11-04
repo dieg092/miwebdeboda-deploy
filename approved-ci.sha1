@@ -1,0 +1,4 @@
+# Hashes (git blob) de las versiones aprobadas de .github/workflows/ci.yml de
+# wedding-invite-2. Solo se despliega un commit cuyo ci.yml esté en esta lista.
+# Para aprobar una versión nueva: git hash-object .github/workflows/ci.yml
+214a234791c30d3a48df3ffcb507a243be6dbfd0  2026-11-04 ci sin secretos de producción

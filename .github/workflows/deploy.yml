@@ -1,0 +1,133 @@
+name: Deploy a producción
+
+# Lo lanza la CI de main de wedding-invite-2 al terminar en verde (paso «Request
+# production deploy», con DEPLOY_DISPATCH_TOKEN) o el propietario a mano desde
+# Actions. Sea quien sea, scripts/verify-deployable.sh decide: solo el HEAD de
+# main, con su CI en verde y un ci.yml aprobado.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit de main a desplegar (sha completo; vacío = HEAD de main)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Un despliegue detrás de otro, sin cancelar el que está en marcha.
+concurrency:
+  group: deploy-produccion
+  cancel-in-progress: false
+
+env:
+  APP_REPO: dieg092/wedding-invite-2
+
+jobs:
+  deploy:
+    name: Verificar y desplegar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar que el commit es desplegable
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.APP_READ_TOKEN }}
+          REQUESTED: ${{ inputs.sha }}
+        run: bash scripts/verify-deployable.sh
+
+      - name: Descargar wedding-invite-2 en ese commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.verify.outputs.sha }}
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          package_json_file: app/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      # Las imágenes del blog no viajan al deployment (.vercelignore): se sirven
+      # desde S3. Se suben antes del deploy para que una imagen nueva no llegue a
+      # producción con 404. Si falla, se comprueba que ya estén y se avisa.
+      - name: Subir imágenes del blog a S3
+        working-directory: app
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          pnpm blog:sync-images || {
+            echo "::warning::No se pudieron subir las imágenes del blog a S3; compruebo que ya estén."
+            pnpm blog:sync-images --check || echo "::error::Faltan imágenes del blog en S3: lanzar 'pnpm blog:sync-images' en local."
+          }
+
+      # build:vercel corre 'prisma migrate deploy' contra producción dentro de
+      # este mismo deploy (con las variables de producción que guarda Vercel).
+      - name: Deploy to Vercel (production)
+        id: deploy
+        working-directory: app
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: pnpm exec vercel deploy --prod --yes --token="$VERCEL_TOKEN" --meta githubCommitSha=${{ steps.verify.outputs.sha }}
+
+      - name: Post-deploy smoke test
+        id: smoke
+        working-directory: app
+        run: pnpm smoke:post-deploy
+
+      # Sin rollback automático: si el deploy llevaba una migración que no es
+      # compatible hacia atrás, volver al código anterior rompería la web.
+      - name: Alertar si el smoke test no termina en éxito
+        if: always() && steps.deploy.outcome == 'success' && steps.smoke.outcome != 'success'
+        run: |
+          echo "::error::🚨 Deploy promovido pero el smoke test no terminó en éxito. Revisión manual inmediata; rollback en Vercel solo si la migración del deploy es compatible hacia atrás (README)."
+
+      - name: Alertar si el deploy falla
+        if: always() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "::error::⚠️ Deploy fallido. La migración de producción pudo aplicarse antes de que fallara el build: revisar el log de Vercel antes de reintentar."
+
+      - name: Build Telegram message
+        id: telegram-message
+        if: always()
+        env:
+          SHA: ${{ steps.verify.outputs.sha }}
+        run: |
+          STATUS="${{ job.status }}"
+          case "$STATUS" in success) EMOJI="✅" ;; cancelled) EMOJI="⚠️" ;; *) EMOJI="❌" ;; esac
+          DETAIL="verificación: ${{ steps.verify.outcome }} · deploy: ${{ steps.deploy.outcome }} · smoke: ${{ steps.smoke.outcome }}"
+          if [ "${{ steps.deploy.outcome }}" = "success" ] && [ "${{ steps.smoke.outcome }}" != "success" ]; then EMOJI="🚨"; DETAIL="$DETAIL — DEPLOY PROMOVIDO SIN SMOKE EN VERDE"; fi
+          {
+            echo "text<<TELEGRAM_MSG_EOF"
+            echo "$EMOJI <b>Deploy miwebdeboda.com</b>: $STATUS"
+            echo "$DETAIL"
+            echo "Commit ${SHA:-sin verificar}"
+            echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "TELEGRAM_MSG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Notify Telegram
+        if: always()
+        uses: ./.github/actions/notify-telegram
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: ${{ steps.telegram-message.outputs.text }}
