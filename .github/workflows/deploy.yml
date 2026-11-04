@@ -77,6 +77,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # variantes ya generadas, por hash de contenido (sin esto, ~1-2 min en cada
+      # despliegue). Solo la usa este job sin secretos; el de deploy no restaura cachés.
+      - uses: actions/cache@v4
+        with:
+          path: .next/cache/blog-image-variants
+          key: blog-variants-${{ hashFiles('public/images/blog/**') }}
+          restore-keys: blog-variants-
       - run: pnpm exec tsx scripts/generate-blog-image-variants.ts
       - uses: actions/upload-artifact@v4
         with:
