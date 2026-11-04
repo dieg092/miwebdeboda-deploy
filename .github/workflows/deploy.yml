@@ -220,12 +220,12 @@ jobs:
           VERIFY: ${{ needs.verify.result }}
           DEPLOY: ${{ needs.deploy.result }}
           SMOKE: ${{ needs.smoke.result }}
-          CANCELLED: ${{ cancelled() }}
+          ASSETS: ${{ needs.assets.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$DEPLOY" = success ] && [ "$SMOKE" = success ]; then EMOJI="✅"; STATUS=success
           elif [ "$DEPLOY" = success ]; then EMOJI="🚨"; STATUS="DEPLOY PROMOVIDO SIN SMOKE EN VERDE"
-          elif [ "$VERIFY" = cancelled ] || [ "$DEPLOY" = cancelled ] || [ "$CANCELLED" = true ]; then
+          elif [ "$VERIFY" = cancelled ] || [ "$ASSETS" = cancelled ] || [ "$DEPLOY" = cancelled ] || [ "$SMOKE" = cancelled ]; then
             # nadie cancela un despliegue a propósito: avisar (el token de despacho puede cancelar ejecuciones)
             EMOJI="🛑"; STATUS="CANCELADO: comprobar quién lo canceló y relanzarlo"
           elif [ "$VERIFY" != success ]; then EMOJI="⛔"; STATUS="no desplegado: no pasa la verificación"

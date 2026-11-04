@@ -20,10 +20,11 @@ on:
   workflow_dispatch:
     inputs:
       region:
-        description: "Región a probar VIA PROXY (ES/MX/US). Vacío = sin proxy, desde la IP del runner (igual que el cron diario)."
+        description: "Región a probar VIA PROXY (ES/MX/US). «ninguna» = sin proxy, desde la IP del runner (igual que el cron diario)."
         required: false
         type: choice
-        options: ["", "ES", "MX", "US"]
+        default: "ninguna"
+        options: ["ninguna", "ES", "MX", "US"]
 
 permissions:
   contents: read
@@ -112,6 +113,7 @@ jobs:
           INPUT_REGION: ${{ inputs.region }}
         run: |
           REGION="$INPUT_REGION"
+          [ "$REGION" = ninguna ] && REGION=""
           if [ -n "$REGION" ]; then
             echo "Ejecucion regional VIA PROXY: $REGION"
           else
