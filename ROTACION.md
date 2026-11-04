@@ -32,7 +32,7 @@ Run workflow (sin sha). Para GitHub: `gh secret set NOMBRE -R <repo>`.
 | 7 | Telegram (`TELEGRAM_BOT_TOKEN`) | aquí, seo-agent | BotFather → /revoke da token nuevo e invalida el anterior al momento: actualizar aquí y en el entorno `produccion` de seo-agent a la vez | solo avisos, unos minutos |
 | 8 | `CRON_SECRET`, `SYNTHETIC_MONITOR_SECRET` | Vercel (crons y monitor) | generar (`openssl rand -hex 32`) → Vercel y aquí → desplegar. Vercel manda el nuevo a los crons tras el deploy | el cron que caiga entre el cambio y el deploy puede dar 401: hacerlo justo después de una ejecución |
 | 9 | `EMAIL_VERIFICATION_SECRET`, `PASSWORD_RESET_SECRET` | Vercel | generar → Vercel → desplegar | los enlaces de verificación y de contraseña enviados antes dejan de valer (caducan en horas de todos modos): hacerlo de madrugada |
-| 10 | `JWT_SECRET` / `PROD_JWT_SECRET` | Vercel | generar → Vercel → desplegar | **cierra todas las sesiones** (duran 7 días). Para evitarlo hay que aceptar antes dos secretos (`JWT_SECRET` + `JWT_SECRET_PREVIOUS` durante 7 días): cambio pequeño en `createSessionUser`/`getSessionUser`, tarea aparte |
+| 10 | `JWT_SECRET` (`PROD_JWT_SECRET` aquí) | Vercel, aquí (monitor sintético), `.env.reel-daemon` local | **Dos claves** (rama `ia/seguridad-jwt-dos-claves`, desplegada antes): ver «JWT_SECRET sin cerrar sesiones» abajo | ninguno |
 | 11 | Base de datos (`DATABASE_URL`, `DIRECT_URL`, `PROD_*`) | Vercel, aquí (health checks) | Neon → Roles → el rol de la app → «Reset password» invalida la antigua: tener preparadas las 4 URLs nuevas, cambiar Vercel y aquí en el mismo momento y desplegar. Las conexiones ya abiertas siguen; las nuevas fallan hasta el deploy | 2–4 min de errores en peticiones que abran conexión nueva: hacerlo de madrugada |
 | 12 | seo-agent (`DATABASE_URL`/`DIRECT_URL` de su BD) | entorno `produccion` | igual que el 11 en su proyecto de Neon; actualizar el entorno y el `.env` local | el workflow que coincida falla y se reintenta al día siguiente |
 | 13 | Google (`GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`) | seo-agent | Google Cloud → cuenta de servicio → Keys → crear clave nueva → entorno `produccion` → ejecutar un workflow → borrar la clave antigua | ninguno |
@@ -40,9 +40,42 @@ Run workflow (sin sha). Para GitHub: `gh secret set NOMBRE -R <repo>`.
 | 15 | `WEDDING_INVITE_2_PAT` | seo-agent | **tiene escritura en el código de wedding-invite-2** (puede empujar a main). Sustituirlo por uno con el mínimo que necesite seo-agent; si solo abre PRs, sigue necesitando Contents: write, así que revocarlo en cuanto seo-agent deje de abrir PRs (tarea B10 de su spec) | ninguno |
 | 16 | `STRIPE_TEST_SECRET_KEY` | wedding-invite-2 (tests) | modo test, no da acceso a dinero real: Stripe → Developers → API keys (test) → «Roll key» con caducidad del antiguo en 24 h | ninguno |
 | 17 | Repos sin workflows (colaboraciones-worker, instagram-carousels, pinterest-publisher) | `.env` locales | sus secretos de GitHub ya están borrados. Si alguna rama de IA tuvo workflows en ellos, rotar sus claves (Apify, Anthropic, Google Search, SerpAPI, Tavily, Groq, Pinterest, Facebook) igual: crear → `.env` → revocar | ninguno |
+| 18 | Repo antiguo del monitor (`dieg092/miwebdeboda-synthetic-monitor`, **público**) | ya no, tras `setup/cambiar-monitor.sh` | descargaba el HEAD de main de la app (código sin pasar la puerta) con `PROD_DATABASE_URL`, `PROD_JWT_SECRET` y `STRIPE_LIVE_RESTRICTED_KEY`: borrar sus secretos (`gh secret delete … -R dieg092/miwebdeboda-synthetic-monitor`), revocar `CHECKOUT_PAT` en GitHub → Settings → Tokens, crear `STRIPE_LIVE_RESTRICTED_KEY` nueva y borrar la antigua en Stripe. BD y JWT: filas 10 y 11 | ninguno |
 
 Los valores no se escriben nunca en el chat, en tareas de Órbita ni en ficheros
 del repositorio: solo en Vercel, en `gh secret set` o en los `.env` locales.
+
+## JWT_SECRET sin cerrar sesiones
+
+La app firma con `JWT_SECRET` y acepta también `JWT_SECRET_PREVIOUS` mientras
+esté puesta (`src/helpers/auth/jwt-keys.ts`; lo mismo para la cookie de acceso a
+webs con contraseña, las firmas de subidas del editor y el token de render de
+reels). Probado en `jwt-keys.test.ts` y `getSessionUser.integration.test.ts`
+(actual, transición y retirada).
+
+1. **Transición** (día 0): `openssl rand -base64 48` → en Vercel (production):
+   `JWT_SECRET_PREVIOUS` = el valor actual de `JWT_SECRET`, y `JWT_SECRET` = el
+   nuevo. Desplegar. Las sesiones abiertas siguen; las nuevas van con la clave nueva.
+2. En el mismo día: el nuevo valor en `PROD_JWT_SECRET` de este repositorio
+   (`gh secret set PROD_JWT_SECRET -R dieg092/miwebdeboda-deploy`) y en
+   `wedding-invite-2/.env.reel-daemon` (reiniciar el daemon de reels).
+3. Comprobar: entrar en la web con una sesión abierta antes del cambio (sigue
+   dentro), cerrar sesión y volver a entrar; monitor sintético en verde.
+4. **Retirada** (día 7 o más, cuando ya han caducado todas las sesiones de antes):
+   `vercel env rm JWT_SECRET_PREVIOUS production` y desplegar. Quien desbloqueó
+   una web con contraseña antes del día 0 (cookie de 30 días) tendrá que volver a
+   escribirla; nadie pierde la sesión.
+5. Vuelta atrás, en cualquier momento antes de la retirada: poner `JWT_SECRET` =
+   el antiguo y quitar `JWT_SECRET_PREVIOUS` (las sesiones con la clave nueva se
+   cerrarían, como mucho una semana de inicios de sesión).
+
+## Tokens nuevos: caducidad y renovación
+
+`APP_READ_TOKEN`, `DEPLOY_DISPATCH_TOKEN` y `VERCEL_TOKEN` caducan (90 días). Una
+semana antes: crear el sustituto igual que la primera vez (`setup/configurar-secretos.sh`
+lo comprueba y lo guarda) y revocar el anterior. Si `DEPLOY_DISPATCH_TOKEN` caduca,
+la CI de main de wedding-invite-2 se pone en rojo en «Request production deploy»
+(no pasa inadvertido) y se despliega a mano desde Actions mientras tanto.
 
 ## Comprobación después de cada bloque
 

@@ -19,8 +19,8 @@ IA, así que ese repositorio ya no guarda ningún secreto de producción:
 
 ## Flujo
 
-1. Algo llega a `main` de wedding-invite-2 (fusión del propietario o fusión
-   automática de Órbita tras su revisión) y la CI corre **sin secretos**
+1. Algo llega a `main` de wedding-invite-2 (siempre una fusión del propietario:
+   Órbita solo prepara PR, `.orbita/ai-task.json` `"autoMerge": false`) y la CI corre **sin secretos**
    (Postgres, S3, Upstash, Resend y Workers AI simulados).
 2. Si termina en verde, su último paso lanza `deploy.yml` aquí.
 3. `scripts/verify-deployable.mjs` lo comprueba todo con un token de solo lectura:
@@ -45,7 +45,8 @@ IA, así que ese repositorio ya no guarda ningún secreto de producción:
 Lo que no se puede hacer desde fuera: el único dato que entra es el sha y solo
 como variable de entorno; todos los jobs exigen la versión de `main` de este
 workflow; el token de despacho no puede leer ni escribir código, secretos, ramas,
-ajustes ni registros de despliegue (lo comprueba `setup/comprobar-tokens.sh`).
+ajustes ni registros de despliegue (lo comprueba `setup/comprobar-tokens.sh`), pero sí
+cancelar o relanzar ejecuciones: ver «Riesgos que quedan» en `MIGRACION.md`.
 
 ## Aprobar
 
@@ -63,8 +64,16 @@ aprobación: es la versión de `migracion-aprobada` que nadie más puede poner.
 
 - `deploy.yml`: despliegue (desde la CI de main o a mano).
 - `health-checks.yml`: canario de email, latido de crons y blog contra producción
-  (diario, 08:45 UTC). **Desactivado** hasta que `setup/configurar-secretos.sh`
-  ponga sus secretos (lo reactiva al terminar); mientras, sigue el de wedding-invite-2.
+  (diario, 09:15 UTC). **Desactivado** hasta que `setup/configurar-secretos.sh`
+  ponga sus secretos (lo reactiva al terminar); el de wedding-invite-2 sigue hasta
+  la fase 6 de `MIGRACION.md`.
+- `monitor-sintetico.yml` (diario) y `stripe-live.yml` (lunes y jueves): monitor de
+  suscripciones con Stripe, traídos de `miwebdeboda-synthetic-monitor`.
+  **Desactivados** hasta `setup/cambiar-monitor.sh`.
+
+Los tres ejecutan código de la app con secretos de producción, así que solo
+descargan el commit que ya está en producción (`scripts/ultimo-desplegado.mjs`),
+nunca el HEAD de main.
 - `test.yml`: tests de la puerta (`npm test`), sin secretos.
 
 ## Recuperación
@@ -81,11 +90,7 @@ aprobación: es la versión de `migracion-aprobada` que nadie más puede poner.
 
 ## Puesta en marcha y pruebas
 
-1. `setup/configurar-secretos.sh` (propietario): lee producción con `vercel env
-   pull`, pide los tokens nuevos, **comprueba sus permisos** y solo entonces los
-   guarda. Nunca escribe ningún valor en disco ni en pantalla.
-2. Aprobar la huella del primer commit a desplegar (`scripts/aprobar.sh huella`).
-3. `setup/prueba-e2e.sh`: prueba completa con un cambio inocuo (ver el script).
-4. `setup/retirar-secretos-antiguos.sh` y después `ROTACION.md`.
+`MIGRACION.md`: fases en orden, con su comprobación y su vuelta atrás, la guía para
+crear los tokens y los riesgos que quedan.
 
-`npm test` cubre la puerta con una API de GitHub simulada (30 casos).
+`npm test` cubre la puerta con una API de GitHub simulada.
