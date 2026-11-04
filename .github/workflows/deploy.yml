@@ -36,7 +36,8 @@ jobs:
     # Solo la versión de este workflow que está en main (un dispatch puede pedir otra rama).
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # hasta 15 min esperando a que termine la CI que pidió el despliegue (waitForCi)
+    timeout-minutes: 20
     permissions:
       contents: read
       deployments: read

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { Refused, SKIP_RE, deployedOrBootstrap, fingerprint, parseApprovals, protectedMatcher, testWeakenings, verify } from "../scripts/verify-deployable.mjs";
+import { Refused, SKIP_RE, deployedOrBootstrap, fingerprint, parseApprovals, protectedMatcher, testWeakenings, verify, waitForCi } from "../scripts/verify-deployable.mjs";
 
 const PROTECTED = readFileSync(new URL("../protegido.txt", import.meta.url), "utf8");
 const SIN_CI = readFileSync(new URL("../sin-ci.txt", import.meta.url), "utf8");
@@ -280,5 +280,43 @@ describe("verify: quién movió main desde el último despliegue", () => {
     const { api, calls } = fakeApi({ deployed: HEAD, activity: [] });
     await verify({ api, appRepo: "o/app", deployRepo: "o/deploy", requested: "", protectedText: PROTECTED, approvalsText: `huella ${FP} x`, bootstrapBase: s("e"), ciIgnoredText: SIN_CI, log: () => {} });
     assert.equal(calls.some((p) => p.includes("/activity")), false);
+  });
+});
+
+describe("waitForCi: la CI pide el despliegue antes de terminar su propio run", () => {
+  const runsApi = (sequence) => {
+    let n = 0;
+    const calls = [];
+    const api = async (p) => {
+      calls.push(p);
+      return { workflow_runs: sequence[Math.min(n++, sequence.length - 1)] };
+    };
+    return { api, calls };
+  };
+  const run = (status, head_sha = HEAD) => ({ id: 7, head_sha, status });
+  const opts = (extra = {}) => ({ intervalMs: 1, timeoutMs: 5, sleep: async () => {}, log: () => {}, ...extra });
+
+  it("espera mientras el run de ese commit sigue en marcha y sigue cuando termina", async () => {
+    const { api, calls } = runsApi([[run("in_progress")], [run("in_progress")], [run("completed")]]);
+    assert.equal(await waitForCi(api, "o/app", HEAD, opts()), "terminada");
+    assert.equal(calls.length, 3);
+    assert.match(calls[0], /runs\?branch=main&event=push&head_sha=a{40}/);
+  });
+  it("no espera si no hay ningún run pendiente de ese commit", async () => {
+    const { api, calls } = runsApi([[run("completed"), run("in_progress", MID)]]);
+    assert.equal(await waitForCi(api, "o/app", HEAD, opts()), "terminada");
+    assert.equal(calls.length, 1);
+  });
+  it("deja de esperar al llegar al límite (y verify decidirá, en rojo)", async () => {
+    let slept = 0;
+    const { api } = runsApi([[run("queued")]]);
+    assert.equal(await waitForCi(api, "o/app", HEAD, opts({ sleep: async () => void slept++ })), "sin-terminar");
+    assert.ok(slept >= 5);
+  });
+  it("sin sha pedido (despliegue manual del HEAD) no consulta nada", async () => {
+    const { api, calls } = runsApi([[run("in_progress")]]);
+    assert.equal(await waitForCi(api, "o/app", "", opts()), "sin-sha");
+    assert.equal(await waitForCi(api, "o/app", "main", opts()), "sin-sha");
+    assert.equal(calls.length, 0);
   });
 });

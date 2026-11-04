@@ -145,6 +145,26 @@ export async function deployedOrBootstrap(api, deployRepo, bootstrapBase) {
   return sha;
 }
 
+/**
+ * La CI de main pide el despliegue desde su propio run, que aún no ha terminado: hasta que termine no cuenta como
+ * «CI en verde». Espera (como mucho `timeoutMs`) a que no quede ningún run de push de main sin terminar para ese
+ * commit; después decide verify como siempre (si no acabó en verde, se rechaza).
+ */
+export async function waitForCi(api, appRepo, sha, { timeoutMs = 15 * 60_000, intervalMs = 20_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = console.log } = {}) {
+  if (!SHA_RE.test(sha ?? "")) return "sin-sha";
+  for (let waited = 0; ; waited += intervalMs) {
+    const runs = await api(`repos/${appRepo}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${sha}&per_page=10`);
+    const pending = (runs.workflow_runs ?? []).filter((r) => r.head_sha === sha && r.status !== "completed");
+    if (!pending.length) return "terminada";
+    if (waited >= timeoutMs) {
+      log(`la CI de ${sha.slice(0, 7)} sigue sin terminar tras ${Math.round(timeoutMs / 60_000)} min`);
+      return "sin-terminar";
+    }
+    if (waited === 0) log(`esperando a que termine la CI de ${sha.slice(0, 7)} (run ${pending[0].id})…`);
+    await sleep(intervalMs);
+  }
+}
+
 const OWNER_UPDATES = new Set(["push", "pr_merge"]);
 const MAX_MAIN_UPDATES = 100;
 
@@ -248,6 +268,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     if (!GITHUB_SHA) refuse("falta GITHUB_SHA");
     if (!DEPLOY_GH_TOKEN) refuse("falta el GITHUB_TOKEN del workflow (DEPLOY_GH_TOKEN) para leer el registro de despliegues");
     const read = (f) => readFileSync(path.join(here, f), "utf8");
+    await waitForCi(github(GH_TOKEN), APP_REPO, REQUESTED.trim());
     const r = await verify({
       api: github(GH_TOKEN),
       deployApi: github(DEPLOY_GH_TOKEN),
