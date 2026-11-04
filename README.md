@@ -2,72 +2,90 @@
 
 Despliegue a producción de miwebdeboda.com y comprobaciones que necesitan
 credenciales reales. **Ninguna tarea de IA trabaja en este repositorio**: vive
-fuera de las carpetas de Órbita y es el único sitio con secretos de producción
-en GitHub.
+fuera de las carpetas de Órbita (y el sandbox de los agentes no puede leerlo) y es
+el único sitio con secretos de producción de la web en GitHub.
 
 ## Por qué existe
 
 En GitHub Free, los secretos de un repositorio privado los puede leer cualquier
-workflow de cualquier rama: basta con que una rama cambie su `ci.yml`. Las ramas
-`ia/**` de wedding-invite-2 las escribe la IA, así que ese repositorio ya no
-guarda ningún secreto de producción:
+workflow de cualquier rama. Las ramas `ia/**` de wedding-invite-2 las escribe la
+IA, así que ese repositorio ya no guarda ningún secreto de producción:
 
 | Dónde | Qué secretos | Quién escribe código |
 |---|---|---|
 | `wedding-invite-2` | ninguno de producción: `STRIPE_TEST_SECRET_KEY` (modo test) y `DEPLOY_DISPATCH_TOKEN` (solo lanza `deploy.yml`) | propietario + tareas de IA |
-| `miwebdeboda-deploy` (este) | Vercel, AWS, Resend, BD de producción, Telegram | solo el propietario |
-| `seo-agent` (público) | en el entorno `produccion`, que solo admite `main` | propietario + tareas de IA |
+| `miwebdeboda-deploy` (este) | Vercel, AWS, Resend, BD de producción, Telegram, lectura de la app | solo el propietario |
+| `seo-agent` (público) | en el entorno `produccion`, que solo admite `main`; la IA no fusiona en su main (`.orbita/ai-task.json`) | propietario + ramas de IA |
 
 ## Flujo
 
-1. Se fusiona en `main` de wedding-invite-2 y su CI corre **sin secretos**
-   (Postgres, S3, Upstash y Resend simulados).
-2. Si termina en verde, su último paso lanza `deploy.yml` aquí con el sha.
-3. `scripts/verify-deployable.sh` lo comprueba todo por su cuenta, con un token
-   de solo lectura:
-   - es el **HEAD actual de `main`** (nunca un commit antiguo ni de otra rama);
-   - hay una ejecución de `ci.yml` **en `main`, por push, sobre ese sha**,
-     terminada en éxito (una rama no puede crearla);
-   - el `ci.yml` de ese commit está en `approved-ci.sha1` (si alguien debilita
-     la CI en `main`, no se despliega hasta que el propietario la apruebe aquí).
-4. Sube las imágenes del blog a S3, `vercel deploy --prod` (Vercel aplica la
-   migración con sus variables de producción), smoke test y aviso por Telegram.
+1. Algo llega a `main` de wedding-invite-2 (fusión del propietario o fusión
+   automática de Órbita tras su revisión) y la CI corre **sin secretos**
+   (Postgres, S3, Upstash, Resend y Workers AI simulados).
+2. Si termina en verde, su último paso lanza `deploy.yml` aquí.
+3. `scripts/verify-deployable.mjs` lo comprueba todo con un token de solo lectura:
+   - se despliega **siempre el HEAD de `main`**;
+   - con su CI de `main` en verde (o la de un commit anterior de main si lo que
+     hay después son solo ficheros que la CI no prueba, `sin-ci.txt`: los commits
+     automáticos de contenido de redes);
+   - con la **huella de los ficheros protegidos** (`protegido.txt`: workflows,
+     `package.json`, lockfile, configuración de TypeScript/ESLint/Playwright/Vitest,
+     preparación de E2E, scripts de la CI, migraciones, `vercel.json`,
+     `next.config.ts`) aprobada en `aprobaciones.txt`;
+   - sin tests borrados ni `.skip`/`.only`/`.todo`/`fixme` nuevos desde el último
+     despliegue, salvo commit aprobado.
+4. Jobs separados, cada uno en una máquina nueva:
+   - `assets` ejecuta código de la app (variantes de imagen) **sin secretos**;
+   - `deploy` tiene los secretos pero solo ejecuta código de este repositorio y
+     herramientas fijadas en su `package-lock.json` (Vercel CLI, AWS SDK, instaladas
+     con `--ignore-scripts`): de la app solo lee ficheros;
+   - `smoke` ejecuta el smoke test de la app **sin secretos**;
+   - `record` registra el despliegue (base para comprobar los tests la próxima vez).
 
-Un `DEPLOY_DISPATCH_TOKEN` filtrado solo puede volver a lanzar el despliegue del
-HEAD de `main` ya validado.
+Lo que no se puede hacer desde fuera: el único dato que entra es el sha y solo
+como variable de entorno; todos los jobs exigen la versión de `main` de este
+workflow; el token de despacho no puede leer ni escribir código, secretos, ramas,
+ajustes ni registros de despliegue (lo comprueba `setup/comprobar-tokens.sh`).
+
+## Aprobar
+
+```sh
+bash scripts/aprobar.sh huella <sha>   # cambios en ficheros protegidos (CI, dependencias, migraciones…)
+bash scripts/aprobar.sh commit <sha>   # tests borrados o desactivados a propósito
+```
+
+El script enseña los ficheros que cambian, pide «si», añade la línea a
+`aprobaciones.txt` y hace push. Después: Actions → «Deploy a producción» → Run
+workflow. Una migración nueva (`prisma/migrations/**`) siempre necesita esta
+aprobación: es la versión de `migracion-aprobada` que nadie más puede poner.
 
 ## Workflows
 
-- `deploy.yml`: despliegue (desde la CI de main o a mano en Actions, con el sha
-  o vacío para el HEAD de main).
-- `health-checks.yml`: canario de email, latido de crons y comprobaciones del
-  blog contra producción (diario, 08:45 UTC). Antes estaba en wedding-invite-2.
-
-Lighthouse sigue en wedding-invite-2, ya sin secretos (base efímera).
-
-## Aprobar un cambio de la CI
-
-Cuando un cambio de `.github/workflows/ci.yml` llegue a `main` el despliegue se
-parará con «ci.yml no aprobado». Revisad el diff y, si es correcto:
-
-```sh
-cd wedding-invite-2 && git hash-object .github/workflows/ci.yml
-# añadir ese hash a approved-ci.sha1 aquí, commit y push; después relanzar deploy.yml
-```
+- `deploy.yml`: despliegue (desde la CI de main o a mano).
+- `health-checks.yml`: canario de email, latido de crons y blog contra producción
+  (diario, 08:45 UTC). **Desactivado** hasta que `setup/configurar-secretos.sh`
+  ponga sus secretos (lo reactiva al terminar); mientras, sigue el de wedding-invite-2.
+- `test.yml`: tests de la puerta (`npm test`), sin secretos.
 
 ## Recuperación
 
-- **Volver a la versión anterior**: Vercel → proyecto → Deployments → el
-  anterior → *Instant Rollback* (o `vercel rollback` en local). No reconstruye
-  ni migra. Solo si la migración del último deploy es compatible hacia atrás;
-  si no, arreglar hacia delante.
+- **Volver a la versión anterior**: Vercel → Deployments → el anterior → *Instant
+  Rollback* (o `vercel rollback`). No reconstruye ni migra: solo si la migración
+  del último deploy es compatible hacia atrás; si no, arreglar hacia delante.
 - **Relanzar un despliegue**: Actions → «Deploy a producción» → Run workflow.
 - **Si GitHub Actions no está disponible**: `vercel deploy --prod` desde un
   checkout limpio de `main` en el portátil del propietario.
-- **Rotar un secreto**: `gh secret set NOMBRE -R dieg092/miwebdeboda-deploy`.
+- **Si la puerta bloquea algo urgente y correcto**: aprobarlo (arriba), no
+  desactivarla.
+- **Rotar un secreto**: `ROTACION.md`.
 
-## Puesta en marcha
+## Puesta en marcha y pruebas
 
-`setup/configurar-secretos.sh`, que ejecuta el propietario. Lee los valores de
-producción con `vercel env pull` y pide por teclado los tokens que hay que crear
-a mano. Nunca escribe ningún valor en disco ni en pantalla.
+1. `setup/configurar-secretos.sh` (propietario): lee producción con `vercel env
+   pull`, pide los tokens nuevos, **comprueba sus permisos** y solo entonces los
+   guarda. Nunca escribe ningún valor en disco ni en pantalla.
+2. Aprobar la huella del primer commit a desplegar (`scripts/aprobar.sh huella`).
+3. `setup/prueba-e2e.sh`: prueba completa con un cambio inocuo (ver el script).
+4. `setup/retirar-secretos-antiguos.sh` y después `ROTACION.md`.
+
+`npm test` cubre la puerta con una API de GitHub simulada (30 casos).

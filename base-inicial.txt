@@ -1,0 +1,4 @@
+# Commit que está en producción antes del primer despliegue desde este repositorio
+# (último despliegue de la CI antigua, run 41729200559). Solo se usa mientras no
+# haya ningún despliegue registrado aquí; después manda el registro de deployments.
+e57a9866cdbc3f4ebcbcb5263cb716e29af748f4

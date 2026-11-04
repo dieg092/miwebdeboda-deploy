@@ -15,6 +15,8 @@ jobs:
   check:
     name: Canario de email + latido de crons
     # Fijado: ubuntu-latest pasó a 26.04 (2026-11-02) y Playwright aún no la admite.
+    # solo la versión de main de este repositorio (un dispatch puede pedir otra rama)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 

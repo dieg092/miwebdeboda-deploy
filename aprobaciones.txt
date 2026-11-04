@@ -1,0 +1,10 @@
+# Aprobaciones del propietario. Solo se añaden con scripts/aprobar.sh, después de
+# revisar el diff. Ninguna tarea de IA puede escribir en este repositorio.
+#
+#   huella <sha256> <fecha> <commit> <motivo>
+#       el conjunto exacto de ficheros protegidos (protegido.txt) de ese commit
+#   commit <sha> <fecha> <motivo>
+#       acepta los tests borrados o desactivados hasta ese commit
+#
+# Se pueden borrar las líneas antiguas: solo cuentan la huella del commit que se
+# despliega y los commits posteriores al último despliegue.

@@ -40,15 +40,19 @@ PROJ=$(node -p "require('$WEB/.vercel/project.json').projectId")
 
 cat <<'TXT'
 
-2/4 Tokens que hay que crear a mano (no se pueden crear por API):
+2/4 Tokens que hay que crear a mano (no se pueden crear por API). Todos con caducidad (90 días):
 
   a) APP_READ_TOKEN — https://github.com/settings/personal-access-tokens/new
      Fine-grained · Only select repositories: wedding-invite-2
-     Permisos de repositorio: Contents = Read-only, Actions = Read-only (Metadata va solo).
+     Permisos de repositorio: Contents = Read-only, Actions = Read-only (Metadata va solo). Nada más.
   b) DEPLOY_DISPATCH_TOKEN — mismo sitio, otro token
      Only select repositories: miwebdeboda-deploy · Actions = Read and write. Nada más.
-  c) VERCEL_TOKEN — https://vercel.com/account/settings/tokens, nuevo, solo para este despliegue.
+  c) VERCEL_TOKEN — https://vercel.com/account/settings/tokens, nuevo, con caducidad,
+     limitado al equipo del proyecto (y al proyecto si Vercel lo ofrece).
   d) Telegram (opcional): el token del bot y el chat id que ya usabais.
+
+Cada token se comprueba antes de guardarlo (setup/comprobar-tokens.sh): si tiene
+más permisos de los necesarios, no se guarda nada.
 
 TXT
 APP_READ_TOKEN=$(ask "APP_READ_TOKEN")
@@ -56,6 +60,14 @@ DEPLOY_DISPATCH_TOKEN=$(ask "DEPLOY_DISPATCH_TOKEN")
 VERCEL_TOKEN=$(ask "VERCEL_TOKEN")
 TG_TOKEN=$(ask "TELEGRAM_BOT_TOKEN (Enter para omitir)")
 TG_CHAT=$(ask "TELEGRAM_CHAT_ID (Enter para omitir)")
+
+echo "Comprobando permisos de los tokens:"
+# shellcheck source=comprobar-tokens.sh
+source "$(dirname "$0")/comprobar-tokens.sh"
+check_app_read_token "$APP_READ_TOKEN"
+check_dispatch_token "$DEPLOY_DISPATCH_TOKEN"
+check_vercel_token "$VERCEL_TOKEN" "$PROJ"
+if [ "$fails" -ne 0 ]; then echo "$fails comprobaciones fallan: no se ha guardado nada. Rehaced esos tokens y volved a lanzar el script."; exit 1; fi
 
 echo "3/4 Secretos de miwebdeboda-deploy y el token de despacho de wedding-invite-2"
 put $DEPLOY_REPO APP_READ_TOKEN "$APP_READ_TOKEN"
@@ -81,6 +93,9 @@ for n in $(gh api "repos/$SEO_REPO/actions/secrets?per_page=100" --jq '.secrets[
   esac
   put $SEO_REPO $n "$v" produccion
 done
+
+echo "Activando las comprobaciones diarias de producción (health-checks.yml)"
+gh workflow enable health-checks.yml -R $DEPLOY_REPO
 
 echo
 echo "Hecho. Los secretos antiguos de wedding-invite-2 y los de repositorio de seo-agent"

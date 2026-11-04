@@ -1,0 +1,16 @@
+# Copia de paths-ignore de .github/workflows/ci.yml de wedding-invite-2: ficheros
+# cuyos commits no lanzan la CI (contenido de redes, documentación). Un HEAD de
+# main que solo añade estos ficheros sobre un commit con CI en verde se puede
+# desplegar. Si cambia paths-ignore en ci.yml (fichero protegido), revisad esto.
+docs/**
+audits/**
+content-output/**
+.orbita/**
+**/*.md
+src/lib/social/published-instagram-photo.json
+src/lib/social/published-instagram-photo-fb.json
+src/lib/social/published-pinterest-photo-pins.json
+src/lib/blog/social-instagram.json
+src/lib/blog/social-facebook.json
+src/lib/blog/social-pinterest.json
+src/lib/blog/social-copy-pending.json

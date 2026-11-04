@@ -1,0 +1,14 @@
+{
+  "name": "miwebdeboda-deploy",
+  "private": true,
+  "type": "module",
+  "description": "Despliegue a producción de miwebdeboda.com. Herramientas fijadas aquí: el despliegue nunca usa las de la app.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1088.0",
+    "vercel": "54.7.1"
+  },
+  "engines": { "node": ">=24" }
+}

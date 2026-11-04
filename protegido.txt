@@ -1,0 +1,42 @@
+# Ficheros de wedding-invite-2 que deciden qué se prueba, cómo y qué llega a
+# producción. Cualquier cambio en ellos cambia la huella y para el despliegue
+# hasta que el propietario la apruebe (scripts/aprobar.sh). «**» = cualquier
+# ruta, «*» = un nivel, «!» excluye (la última regla que coincide manda).
+
+# CI y acciones
+.github/**
+
+# dependencias y scripts de package.json (incluida la lista de tests de «pnpm test»)
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.npmrc
+.nvmrc
+.node-version
+
+# configuración de tipos, lint y tests
+tsconfig*.json
+eslint.config.*
+playwright*.config.*
+vitest*.config.*
+vitest.workspace.*
+
+# E2E: preparación, limpieza y utilidades (los *.spec.ts los vigila la regla de tests debilitados)
+e2e/**
+!e2e/**/*.spec.ts
+
+# scripts que usa la CI o el despliegue
+scripts/run-integration-tests.ts
+scripts/integration-retry.ts
+scripts/ci-seed.ts
+scripts/check-bundle-budget.ts
+scripts/post-deploy-smoke.ts
+scripts/ci/**
+perf-budgets.json
+src/helpers/db/assertNotProductionDatabase.ts
+
+# lo que corre contra producción al desplegar: migraciones y configuración de Vercel/Next
+prisma/migrations/**
+vercel.json
+.vercelignore
+next.config.*
