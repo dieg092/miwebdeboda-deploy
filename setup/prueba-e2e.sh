@@ -69,7 +69,7 @@ echo "3. Intentos de saltarse la puerta"
 R=$(lanza "$SHA"); [ "$(fin_run "$R")" = failure ] && ok "desplegar el commit de la rama: rechazado ($(log_verify "$R"))" || ko "¡se aceptó el commit de la rama!"
 R=$(lanza 'main;id'); [ "$(fin_run "$R")" = failure ] && ok "sha con inyección: rechazado ($(log_verify "$R"))" || ko "¡se aceptó un sha inválido!"
 
-echo "4. Fusión en main (la haría el propietario o la fusión automática de Órbita)"
+echo "4. Fusión en main (la hace el propietario; Órbita solo prepara el PR)"
 confirm "¿Fusionar $BRANCH en main?"
 git -C "$WT" fetch -q origin
 git -C "$WT" rebase -q origin/main
