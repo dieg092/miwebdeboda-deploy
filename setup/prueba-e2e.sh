@@ -61,7 +61,7 @@ ok "rama subida ($SHA)"
 echo "2. CI de la rama (sin secretos de producción, sin desplegar)"
 read -r RUN CONC < <(espera_ci "$SHA")
 [ "$CONC" = success ] && ok "CI en verde (run $RUN)" || ko "la CI de la rama falla (run $RUN)"
-STEP=$(gh api "repos/$APP/actions/runs/$RUN/jobs" --jq '.jobs[0].steps[] | select(.name=="Request production deploy") | .conclusion')
+STEP=$(gh api "repos/$APP/actions/runs/$RUN/jobs?per_page=50" --jq '.jobs[] | select(.name=="Deploy a producción") | .conclusion')
 [ "$STEP" = skipped ] && ok "la rama no pide despliegue" || ko "la rama pidió despliegue ($STEP)"
 [ -z "$(gh run list -R "$DEPLOY" -w deploy.yml --json createdAt --jq "[.[] | select(.createdAt > \"$START\")][0] // empty")" ] && ok "ningún despliegue lanzado" || ko "se lanzó un despliegue desde la rama"
 
