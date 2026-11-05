@@ -21,10 +21,12 @@ ok() { echo "  ✓ $*"; }
 ko() { echo "  ✗ $*"; exit 1; }
 confirm() { read -r -p "$1 Escribe «si»: " a </dev/tty; [ "$a" = si ] || { echo "Parado."; exit 1; }; }
 
-# espera_ci SHA → conclusión de la CI de ese commit
+# espera_ci SHA [main] → conclusión de la CI de ese commit (con «main», solo la del push a main:
+# la rama y main pueden tener el mismo sha)
 espera_ci() {
-  local id=""
-  for _ in $(seq 1 60); do id=$(gh api "repos/$APP/actions/workflows/ci.yml/runs?head_sha=$1" --jq '.workflow_runs[0].id // empty'); [ -n "$id" ] && break; sleep 20; done
+  local id="" q=""
+  [ "${2:-}" = main ] && q="&branch=main&event=push"
+  for _ in $(seq 1 60); do id=$(gh api "repos/$APP/actions/workflows/ci.yml/runs?head_sha=$1$q" --jq '.workflow_runs[0].id // empty'); [ -n "$id" ] && break; sleep 20; done
   [ -n "$id" ] || ko "no arranca la CI de $1"
   gh run watch "$id" -R "$APP" --exit-status >/dev/null 2>&1 || true
   echo "$id $(gh api "repos/$APP/actions/runs/$id" --jq .conclusion)"
@@ -32,7 +34,7 @@ espera_ci() {
 # despliegue_tras FECHA → id del primer deploy.yml creado después
 despliegue_tras() {
   local id=""
-  for _ in $(seq 1 45); do
+  for _ in $(seq 1 90); do  # la CI de main en el runner propio tarda ~25 min
     id=$(gh run list -R "$DEPLOY" -w deploy.yml --json databaseId,createdAt --jq "[.[] | select(.createdAt > \"$1\")] | sort_by(.createdAt) | .[0].databaseId // empty")
     [ -n "$id" ] && break; sleep 20
   done
@@ -44,7 +46,7 @@ lanza() { # lanza [sha] → id del run
   despliegue_tras "$t"
 }
 fin_run() { gh run watch "$1" -R "$DEPLOY" --exit-status >/dev/null 2>&1 && echo success || echo failure; }
-log_verify() { gh run view "$1" -R "$DEPLOY" --log 2>/dev/null | grep -m1 "::error::\|Desplegable:" | sed 's/.*::error:://; s/.*Desplegable/Desplegable/' | cut -c1-200; }
+log_verify() { gh run view "$1" -R "$DEPLOY" --log 2>/dev/null | grep -m1 "##\[error\]\|Desplegable:" | sed 's/.*##\[error\]//; s/.*Desplegable/Desplegable/' | cut -c1-200; }
 
 echo "1. Commit en una rama de IA ($BRANCH)"
 git -C "$WEB" fetch -q origin
@@ -79,7 +81,7 @@ git -C "$WT" push -q origin "HEAD:main"
 ok "main = $SHA"
 
 echo "5. Validación de main y primer intento de despliegue (debe pararse: .vercelignore cambió)"
-read -r RUN CONC < <(espera_ci "$SHA")
+read -r RUN CONC < <(espera_ci "$SHA" main)
 [ "$CONC" = success ] && ok "CI de main en verde (run $RUN)" || ko "la CI de main falla (run $RUN)"
 R=$(despliegue_tras "$START"); [ -n "$R" ] || ko "la CI de main no lanzó el despliegue"
 [ "$(fin_run "$R")" = failure ] && ok "despliegue parado sin aprobación ($(log_verify "$R"))" || ko "¡se desplegó un fichero protegido sin aprobar!"
@@ -103,7 +105,7 @@ git -C "$WT" show "$SHA~1:.vercelignore" > "$WT/.vercelignore"
 git -C "$WT" add .vercelignore && git -C "$WT" commit -qm "quita la prueba de despliegue"
 START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 git -C "$WT" push -q origin "HEAD:main"
-read -r RUN CONC < <(espera_ci "$(git -C "$WT" rev-parse HEAD)")
+read -r RUN CONC < <(espera_ci "$(git -C "$WT" rev-parse HEAD)" main)
 R=$(despliegue_tras "$START")
 [ "$(fin_run "$R")" = success ] && ok "limpieza desplegada sin nueva aprobación" || ko "la limpieza no se desplegó (run $R)"
 git -C "$WEB" worktree remove --force "$WT"; git -C "$WEB" branch -q -D "$BRANCH"; git -C "$WEB" push -q origin --delete "$BRANCH"
