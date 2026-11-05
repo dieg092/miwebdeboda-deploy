@@ -9,3 +9,4 @@
 # Se pueden borrar las líneas antiguas: solo cuentan la huella del commit que se
 # despliega y los commits posteriores al último despliegue.
 huella e27abd796f6011fdf651d0b6e2674559287c189d498205dec199b11ec111787d 2026-11-05 9c17dafa60c4 
+huella 33f1fbb1096a3469d0aa04914fc83e6bf24a8e0994942f95a0d760ad97e4046d 2026-11-05 0de8244c9bbd 
