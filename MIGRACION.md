@@ -7,6 +7,32 @@ camino antiguo se puede recuperar en minutos revirtiendo un commit.
 Quién: **P** = propietario (fusiones, aprobaciones, tokens, todo lo que toca
 producción); **C** = Claude, solo cuando el propietario lo autoriza en esa fase.
 
+## Estado (2026-11-06)
+
+Fases 0–7 y 9 hechas; la 8 (rotación) pendiente, con el bloque A preparado.
+
+Arquitectura en marcha:
+- **wedding-invite-2** (privado): su CI corre en un runner propio (`mac-ci`,
+  etiqueta `miwebdeboda-ci`) dentro de una VM Lima del Mac, con cortafuegos que
+  le impide llegar al Mac y a la red local; no gasta minutos de Actions. Solo
+  guarda `STRIPE_TEST_SECRET_KEY` y `DEPLOY_DISPATCH_TOKEN`. Un push a main con
+  CI verde pide el despliegue a este repositorio.
+- **miwebdeboda-deploy** (público, para tener entornos y minutos gratis): la
+  puerta (`verify-deployable.mjs`: HEAD de main, CI verde, huella de los
+  ficheros protegidos aprobada por el propietario, tests sin debilitar, main
+  actualizado solo por el propietario) y el despliegue a Vercel con los secretos
+  de producción. También los health checks diarios, el monitor sintético y el
+  chequeo live de Stripe (lunes y jueves).
+- **seo-agent** (público): secretos solo en el entorno `produccion` (solo main);
+  sin secretos de repositorio. Lee el embudo con el rol `app_funnel_reader`, que
+  solo ve la vista `seo_funnel_daily`.
+- **Órbita**: agentes en el sandbox (srt) con guarda de ramas y sin fusión
+  automática.
+
+Pendiente: rotación (ROTACION.md, bloque A con script; B de madrugada), retirar
+`JWT_SECRET_PREVIOUS` a los 7 días, limpiar el repo antiguo del monitor tras el
+primer stripe-live en verde, runner efímero y Dependabot.
+
 ## Fase 0 — Órbita sin fusión automática (hecha, 2026-11-04)
 
 - Qué: `COPY_WORKER_AUTOMERGE_ACTIVITIES=` vacío en `~/Projects/personal/orbita/.env.worker`
@@ -179,3 +205,8 @@ proxies. Lo que está en Vercel o en tu `.env` lo coge solo.
   revisión del PR es el control.
 - **El portátil del propietario**: tiene todas las credenciales; el sandbox de
   Órbita lo aísla de los agentes, no de un compromiso del propio portátil.
+- **Runner propio persistente**: la VM `ci-runner` no se recrea entre ejecuciones.
+  Una rama de IA podría dejar algo en ella que falsee el resultado de una CI
+  posterior de main (no hay secretos que robar y el cortafuegos le corta el Mac y
+  la red local). La huella sigue protegiendo los ficheros sensibles. Mitigación
+  prevista: runner efímero (`--ephemeral`) o recrear la VM desde una imagen limpia.
