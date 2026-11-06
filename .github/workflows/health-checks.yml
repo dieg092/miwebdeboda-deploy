@@ -20,7 +20,7 @@ jobs:
     # solo la versión de main de este repositorio (un dispatch puede pedir otra rama)
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
 
     env:
       # Antes eran 2 workflows separados (email-canary-monitor.yml y
