@@ -16,3 +16,4 @@ huella 59e136cf08b528e6c23161e378b0fa85327f3914576ce66ba9df5153a022f8d5 2026-11-
 huella 7e17e69201e3b12acf8e931df6991538cb3651b8cf689d1159c927feeabb9c68 2026-11-06 e0f4dfc5145d 
 commit 602c3b358b49a6fd71d63d7404f747541340fc1b 2026-11-09 saltar studio mientras los planes profesionales no estan a la venta
 commit a9c08df16cf4c8084fa1122df98c1db4206fbd09 2026-11-11 permitir imagenes del endpoint global de s3 en la csp
+huella bdb1fe0606a3f710f66748b5d66e6aa3f38b5a6eb62f690a2e2f06ff79c4fcfd 2026-11-11 a9c08df16cf4 
