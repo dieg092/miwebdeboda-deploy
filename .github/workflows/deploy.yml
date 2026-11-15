@@ -11,7 +11,11 @@ name: Deploy a producción
 #            herramientas fijadas en su package-lock (vercel, AWS SDK): de la app
 #            solo se leen ficheros, nunca se ejecutan.
 #   smoke    código de la app SIN secretos, contra la web ya desplegada.
+#   seo-gate freno SEO: si el rango a desplegar trae commits seo(…), los para con el
+#            freno o el interruptor SEO activos. Código de seo-agent (público, commit
+#            fijado) con el rol seo_ci (solo lee SeoControl y escribe DeployEvent).
 #   record   registra el despliegue (base de la comprobación de tests) y avisa.
+#   seo-record registra el despliegue en seo-agent (DeployEvent) para medir los cambios SEO.
 on:
   workflow_dispatch:
     inputs:
@@ -29,6 +33,9 @@ concurrency:
 
 env:
   APP_REPO: dieg092/wedding-invite-2
+  # seo-agent es público; se fija el commit para que un cambio allí no entre aquí sin revisarlo.
+  SEO_AGENT_REPO: dieg092/seo-agent
+  SEO_AGENT_SHA: cd800826fde4a6864227b64593da87bc2b1bf863
 
 jobs:
   verify:
@@ -98,10 +105,77 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  seo-gate:
+    name: Freno SEO
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      base: ${{ steps.range.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Commit que está ahora en producción
+        id: range
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_REPO: ${{ github.repository }}
+        run: node scripts/ultimo-desplegado.mjs
+      - name: Descargar wedding-invite-2 con historial (solo para leer los asuntos)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.verify.outputs.sha }}
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Commits seo(…) del rango
+        id: seo
+        env:
+          BASE: ${{ steps.range.outputs.sha }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          git -C app log --format=%s "$BASE..$SHA" > subjects.txt
+          n=$(grep -cE '^seo\([0-9a-zA-Z-]{4,40}\)' subjects.txt || true)
+          echo "Commits seo(…) en el rango: $n"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+      - name: Descargar seo-agent (commit fijado)
+        if: steps.seo.outputs.count != '0'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SEO_AGENT_REPO }}
+          ref: ${{ env.SEO_AGENT_SHA }}
+          path: seo-agent
+          persist-credentials: false
+      - name: Instalar seo-agent sin caché (el job tiene un secreto)
+        if: steps.seo.outputs.count != '0'
+        working-directory: seo-agent
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile
+          pnpm db:generate
+      - name: seo-brake-gate
+        if: steps.seo.outputs.count != '0'
+        working-directory: seo-agent
+        env:
+          DATABASE_URL: ${{ secrets.SEO_CI_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.SEO_CI_DATABASE_URL }}
+        run: pnpm exec tsx scripts/seo-brake-gate.ts push < ../subjects.txt
+
   deploy:
     name: Desplegar
     if: github.ref == 'refs/heads/main'
-    needs: [verify, assets]
+    needs: [verify, assets, seo-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -176,7 +250,7 @@ jobs:
   record:
     name: Registrar y avisar
     if: always() && github.ref == 'refs/heads/main'
-    needs: [verify, assets, deploy, smoke]
+    needs: [verify, assets, seo-gate, deploy, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -222,6 +296,7 @@ jobs:
           DEPLOY: ${{ needs.deploy.result }}
           SMOKE: ${{ needs.smoke.result }}
           ASSETS: ${{ needs.assets.result }}
+          SEO_GATE: ${{ needs.seo-gate.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$DEPLOY" = success ] && [ "$SMOKE" = success ]; then EMOJI="✅"; STATUS=success
@@ -230,11 +305,12 @@ jobs:
             # nadie cancela un despliegue a propósito: avisar (el token de despacho puede cancelar ejecuciones)
             EMOJI="🛑"; STATUS="CANCELADO: comprobar quién lo canceló y relanzarlo"
           elif [ "$VERIFY" != success ]; then EMOJI="⛔"; STATUS="no desplegado: no pasa la verificación"
+          elif [ "$SEO_GATE" = failure ]; then EMOJI="⛔"; STATUS="no desplegado: freno SEO (commits seo(…) con el freno o el interruptor activos)"
           else EMOJI="❌"; STATUS=failure; fi
           {
             echo "text<<TELEGRAM_MSG_EOF"
             echo "$EMOJI <b>Deploy miwebdeboda.com</b>: $STATUS"
-            echo "verificación: $VERIFY · deploy: $DEPLOY · smoke: $SMOKE"
+            echo "verificación: $VERIFY · freno SEO: $SEO_GATE · deploy: $DEPLOY · smoke: $SMOKE"
             echo "Commit ${SHA:-sin verificar}"
             echo "$RUN_URL"
             echo "TELEGRAM_MSG_EOF"
@@ -246,3 +322,47 @@ jobs:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: ${{ steps.telegram-message.outputs.text }}
+
+  seo-record:
+    name: Registrar en seo-agent
+    if: always() && github.ref == 'refs/heads/main' && needs.deploy.result == 'success'
+    needs: [verify, seo-gate, deploy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Si falla, el despliegue ya está hecho: solo se pierde la marca para medir.
+    continue-on-error: true
+    steps:
+      - name: Descargar wedding-invite-2 con historial (solo para leer los asuntos)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.verify.outputs.sha }}
+          token: ${{ secrets.APP_READ_TOKEN }}
+          path: app
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Descargar seo-agent (commit fijado)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SEO_AGENT_REPO }}
+          ref: ${{ env.SEO_AGENT_SHA }}
+          path: seo-agent
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Registrar DeployEvent
+        working-directory: seo-agent
+        env:
+          DATABASE_URL: ${{ secrets.SEO_CI_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.SEO_CI_DATABASE_URL }}
+          BASE: ${{ needs.seo-gate.outputs.base }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then echo "::warning::Falta SEO_CI_DATABASE_URL: no se registra en seo-agent"; exit 0; fi
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile
+          pnpm db:generate
+          git -C ../app log --format=%s "$BASE..$SHA" | pnpm exec tsx scripts/record-deploy.ts "$SHA" "$RUN_URL"

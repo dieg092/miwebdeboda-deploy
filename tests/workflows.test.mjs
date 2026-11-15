@@ -20,7 +20,7 @@ describe("workflows: los jobs con secretos de producción no restauran cachés",
   it("se encuentran los workflows y sus jobs", () => {
     assert.ok(workflows.includes("monitor-sintetico.yml") && workflows.includes("deploy.yml"));
     const names = jobs(readFileSync(new URL("deploy.yml", dir), "utf8")).map((j) => j.name);
-    for (const n of ["verify", "assets", "deploy", "smoke", "record"]) assert.ok(names.includes(n), n);
+    for (const n of ["verify", "assets", "seo-gate", "deploy", "smoke", "record", "seo-record"]) assert.ok(names.includes(n), n);
   });
 
   for (const f of workflows) {
