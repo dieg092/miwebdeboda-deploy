@@ -35,6 +35,6 @@ case $kind in
 esac
 echo; read -r -p "¿Aprobar? Escribe «si»: " ok </dev/tty
 [ "$ok" = "si" ] || { echo "No aprobado."; exit 1; }
-echo "$line" >> aprobaciones.txt
+git pull --rebase -q && echo "$line" >> aprobaciones.txt
 git add aprobaciones.txt && git commit -qm "aprueba $kind de ${sha:0:7}" && git push -q
 echo "Aprobado y subido. Relanzad el despliegue: gh workflow run deploy.yml -R dieg092/miwebdeboda-deploy"
