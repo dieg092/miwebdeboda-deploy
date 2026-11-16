@@ -202,8 +202,11 @@ export async function verify({ api, deployApi = api, appRepo, deployRepo, runnin
   // saber qué CI en verde lo respalda.
   const sha = head;
   const isGreen = (r, c) => r.head_sha === c && r.head_branch === "main" && r.event === "push" && r.path === ".github/workflows/ci.yml" && r.conclusion === "success";
+  // El filtro status=success de GitHub a veces tarda en incluir un run ya terminado: se suma la lista sin filtrar
+  // (isGreen sigue exigiendo conclusion success en cada run).
   const greenRuns = await api(`repos/${appRepo}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=30`);
-  const greenShas = [...new Set(greenRuns.workflow_runs.filter((r) => isGreen(r, r.head_sha)).map((r) => r.head_sha))];
+  const latestRuns = await api(`repos/${appRepo}/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=30`);
+  const greenShas = [...new Set([...greenRuns.workflow_runs, ...(latestRuns.workflow_runs ?? [])].filter((r) => isGreen(r, r.head_sha)).map((r) => r.head_sha))];
   let ciSha = greenShas.includes(head) ? head : null;
   if (!ciSha) {
     // HEAD sin CI: vale la CI en verde de un commit anterior de main si todo lo que hay después son ficheros que la
